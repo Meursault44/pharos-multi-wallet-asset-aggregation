@@ -1,0 +1,6 @@
+interface:
+  display_name: "Pharos Multi-Wallet Asset Aggregation"
+  short_description: "Aggregate Pharos balances across wallets."
+  default_prompt: "Use $pharos-multi-wallet-asset-aggregation to aggregate native and ERC20 balances across multiple Pharos wallets."
+policy:
+  allow_implicit_invocation: true
