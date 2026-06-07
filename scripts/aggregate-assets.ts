@@ -14,12 +14,17 @@ const SELECTORS = {
   balanceOf: "70a08231",
 } as const;
 
+const WALLET_BOOK_FILE = path.join(__dirname, "..", "assets", "wallet-labels.json");
+const WALLET_NAME_PATTERN = /^[A-Za-z0-9_.-]{1,40}$/;
+
 type CliArgs = Record<string, string | boolean>;
 
 type WalletSpec = {
   label: string | null;
   address: string;
 };
+
+type WalletBook = Record<string, string>;
 
 type NetworkConfig = {
   name: string;
@@ -80,6 +85,7 @@ type Report = {
   assetsDir: string;
   nativeSymbol: string;
   blockNumber: number;
+  snapshotTime: string;
   walletCount: number;
   tokenCount: number;
   discovery: {
@@ -104,6 +110,8 @@ type Report = {
   warnings: string[];
 };
 
+type OutputMode = "human" | "json" | "csv";
+
 function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {};
   for (let i = 2; i < argv.length; i += 1) {
@@ -122,27 +130,94 @@ function boolArg(value: string | boolean | undefined): boolean {
   return value === true || value === "true";
 }
 
+function printHelp(): void {
+  console.log(`Pharos multi-wallet asset aggregation
+
+Usage:
+  npm run aggregate -- --wallets 0xWallet1,0xWallet2 [options]
+
+Options:
+  --wallets <list>          Comma/space separated wallets; labels accepted as Name:0x...
+  --add-wallet <name:addr>  Save a wallet name in assets/wallet-labels.json
+  --list-wallets           List saved wallet names
+  --remove-wallet <name>    Remove a saved wallet name
+  --network <name>          mainnet (default) or atlantic-testnet
+  --tokens <list>           Extra ERC20 token addresses to scan
+  --format <human|json|csv> Output format, default human
+  --totals-only             Show/export only aggregate asset totals
+  --include-zero            Include zero ERC20 balances in per-wallet output
+  --discover                Discover ERC20 candidates from explorer transfers
+  --max-discovered <n>      Cap discovered token contracts, default 20
+  --activity                Sample recent explorer transactions and gas spent
+  --save <path>             Write the report to a file instead of stdout
+  --assets-dir <path>       Override networks.json/tokens.json directory
+  --rpc-url <url>           Override RPC URL
+
+Examples:
+  npm run aggregate -- --add-wallet Main:0x...
+  npm run aggregate -- --wallets Main,Trading
+  npm run aggregate -- --wallets Main:0x...,Trading:0x...
+  npm run aggregate -- --wallets 0x...,0x... --totals-only
+  npm run aggregate -- --wallets 0x...,0x... --format csv --save report.csv`);
+}
+
+function resolveFormat(value: string | undefined): OutputMode {
+  const format = value || "human";
+  if (format === "human" || format === "json" || format === "csv") return format;
+  throw new Error(`Unsupported format: ${format}. Use human, json, or csv.`);
+}
+
 function isAddress(value: unknown): value is string {
   return typeof value === "string" && /^0x[a-fA-F0-9]{40}$/.test(value);
+}
+
+function isWalletName(value: unknown): value is string {
+  return typeof value === "string" && WALLET_NAME_PATTERN.test(value) && !value.startsWith("0x");
 }
 
 function shortAddress(address: string): string {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
-function parseWalletSpecs(value: string | undefined): WalletSpec[] {
-  if (!value) return [];
-  const specs: WalletSpec[] = [];
-  const matches = value.matchAll(/(?:^|[\s,;\n])(?:([A-Za-z0-9_.-]{1,40})\s*:\s*)?(0x[a-fA-F0-9]{40})/g);
-  for (const match of matches) {
-    specs.push({ label: match[1] || null, address: match[2] });
+function loadWalletBook(): WalletBook {
+  if (!fs.existsSync(WALLET_BOOK_FILE)) return {};
+  const parsed = loadJson<unknown>(WALLET_BOOK_FILE);
+  if (!isRecord(parsed)) throw new Error(`Invalid wallet address book: ${WALLET_BOOK_FILE}`);
+  const book: WalletBook = {};
+  for (const [name, address] of Object.entries(parsed)) {
+    if (!isWalletName(name)) throw new Error(`Invalid saved wallet name: ${name}`);
+    if (!isAddress(address)) throw new Error(`Invalid saved wallet address for ${name}: ${String(address)}`);
+    book[name] = address;
   }
-  if (specs.length > 0) return specs;
+  return book;
+}
+
+function saveWalletBook(book: WalletBook): void {
+  fs.mkdirSync(path.dirname(WALLET_BOOK_FILE), { recursive: true });
+  const sorted = Object.fromEntries(Object.entries(book).sort(([left], [right]) => left.localeCompare(right)));
+  fs.writeFileSync(WALLET_BOOK_FILE, `${JSON.stringify(sorted, null, 2)}\n`, "utf8");
+}
+
+function parseNamedAddress(value: string): WalletSpec {
+  const match = value.match(/^\s*([A-Za-z0-9_.-]{1,40})\s*:\s*(0x[a-fA-F0-9]{40})\s*$/);
+  if (!match) throw new Error(`Invalid wallet mapping: ${value}. Expected name:0xAddress.`);
+  if (!isWalletName(match[1])) throw new Error(`Invalid wallet name: ${match[1]}. Use 1-40 letters, numbers, dots, underscores, or dashes; names cannot start with 0x.`);
+  return { label: match[1], address: match[2] };
+}
+
+function parseWalletSpecs(value: string | undefined, walletBook: WalletBook): WalletSpec[] {
+  if (!value) return [];
   return value
-    .split(/[,\s]+/)
+    .split(/[,\s;\n]+/)
     .map((item) => item.trim())
     .filter(Boolean)
-    .map((address) => ({ label: null, address }));
+    .map((item) => {
+      if (/^[A-Za-z0-9_.-]{1,40}\s*:\s*0x[a-fA-F0-9]{40}$/.test(item)) return parseNamedAddress(item);
+      if (isAddress(item)) return { label: null, address: item };
+      if (isWalletName(item) && walletBook[item]) return { label: item, address: walletBook[item] };
+      if (isWalletName(item)) throw new Error(`Unknown wallet name: ${item}. Add it with --add-wallet ${item}:0xAddress.`);
+      return { label: null, address: item };
+    });
 }
 
 function splitAddresses(value: string | undefined): string[] {
@@ -181,7 +256,7 @@ function resolveAssetsDir(explicitDir: string | undefined): ResolvedAssets {
 
 function resolveConfig(networkName: string | undefined, rpcOverride: string | undefined, assetsOverride: string | undefined) {
   const { assetsDir, networks, tokens } = resolveAssetsDir(assetsOverride);
-  const selected = networkName || networks.defaultNetwork || "atlantic-testnet";
+  const selected = networkName || networks.defaultNetwork || "mainnet";
   const network = networks.networks.find((item) => item.name === selected);
   if (!network && !rpcOverride) throw new Error(`Unsupported network: ${selected}`);
   const resolvedNetwork: NetworkConfig = network || { name: selected, rpcUrl: rpcOverride!, chainId: null, nativeToken: "UNKNOWN" };
@@ -376,11 +451,48 @@ async function readTokenMetadata(rpcUrl: string, token: TokenConfig, warnings: s
   return { address: token.address, name, symbol, decimals };
 }
 
-function toCsv(report: Report): string {
+function toCsv(report: Report, totalsOnly = false): string {
+  if (totalsOnly) {
+    const rows: Array<Array<string | number | boolean | null>> = [
+      [
+        "network",
+        "block",
+        "snapshot_time",
+        "asset_symbol",
+        "asset_name",
+        "token_address",
+        "balance_raw",
+        "balance",
+        "decimals",
+        "is_native",
+        "wallets_with_balance",
+        "wallet_count",
+      ],
+    ];
+    for (const asset of report.totals) {
+      rows.push([
+        report.network,
+        report.blockNumber,
+        report.snapshotTime,
+        asset.symbol,
+        asset.name,
+        asset.address,
+        asset.balanceRaw,
+        asset.balance,
+        asset.decimals,
+        asset.isNative,
+        asset.walletsWithBalance,
+        report.walletCount,
+      ]);
+    }
+    return rows.map((row) => row.map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
+  }
+
   const rows: Array<Array<string | number | boolean | null>> = [
     [
       "network",
       "block",
+      "snapshot_time",
       "wallet_label",
       "wallet",
       "asset_symbol",
@@ -398,6 +510,7 @@ function toCsv(report: Report): string {
       rows.push([
         report.network,
         report.blockNumber,
+        report.snapshotTime,
         wallet.label || "",
         wallet.address,
         asset.symbol,
@@ -414,17 +527,31 @@ function toCsv(report: Report): string {
   return rows.map((row) => row.map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
 }
 
-function toHuman(report: Report): string {
+function toHuman(report: Report, totalsOnly = false): string {
   const lines: string[] = [];
   lines.push("PHAROS MULTI-WALLET ASSET AGGREGATION");
   lines.push(`Network: ${report.network} (chain ${report.chainId || "unknown"})`);
-  lines.push(`Snapshot block: ${report.blockNumber}`);
+  lines.push(`Snapshot: block ${report.blockNumber} at ${report.snapshotTime}`);
   lines.push(`Wallets: ${report.walletCount} | ERC20 tokens scanned: ${report.tokenCount}`);
   if (report.discovery.enabled) lines.push(`Discovery: ${report.discovery.discoveredTokenCount} extra token(s) from explorer transfers`);
+  if (report.rankings.nativeRichest) {
+    const winner = report.rankings.nativeRichest;
+    lines.push(`Top native wallet: ${winner.label || shortAddress(winner.address)} with ${winner.nativeBalance} ${report.nativeSymbol}`);
+  }
   lines.push("");
   lines.push("Aggregate holdings:");
   for (const asset of report.totals) {
     lines.push(`- ${asset.symbol}: ${asset.balance} (${asset.walletsWithBalance}/${report.walletCount} wallets)`);
+  }
+  if (totalsOnly) {
+    if (report.warnings.length > 0) {
+      lines.push("");
+      lines.push("Warnings:");
+      for (const warning of report.warnings) lines.push(`- ${warning}`);
+    }
+    lines.push("");
+    lines.push("Note: balances are point-in-time reads and do not include off-chain prices.");
+    return lines.join("\n");
   }
   lines.push("");
   lines.push("Wallet breakdown:");
@@ -456,11 +583,65 @@ function toHuman(report: Report): string {
   return lines.join("\n");
 }
 
+function renderReport(report: Report, format: OutputMode, totalsOnly: boolean): string {
+  if (format === "csv") return toCsv(report, totalsOnly);
+  if (format === "json") {
+    const output = totalsOnly
+      ? {
+          network: report.network,
+          chainId: report.chainId,
+          blockNumber: report.blockNumber,
+          snapshotTime: report.snapshotTime,
+          walletCount: report.walletCount,
+          tokenCount: report.tokenCount,
+          discovery: report.discovery,
+          totals: report.totals,
+          warnings: report.warnings,
+        }
+      : report;
+    return JSON.stringify(output, null, 2);
+  }
+  return toHuman(report, totalsOnly);
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv);
-  const wallets = parseWalletSpecs(stringArg(args.wallets) || stringArg(args.wallet));
+  if (boolArg(args.help) || boolArg(args.h)) {
+    printHelp();
+    return;
+  }
+  const walletBook = loadWalletBook();
+  const addWallet = stringArg(args["add-wallet"]);
+  const removeWallet = stringArg(args["remove-wallet"]);
+  if (addWallet) {
+    const wallet = parseNamedAddress(addWallet);
+    walletBook[wallet.label!] = wallet.address;
+    saveWalletBook(walletBook);
+    console.log(`Saved wallet ${wallet.label}: ${wallet.address}`);
+    return;
+  }
+  if (removeWallet) {
+    if (!isWalletName(removeWallet)) throw new Error(`Invalid wallet name: ${removeWallet}`);
+    if (!walletBook[removeWallet]) throw new Error(`Unknown wallet name: ${removeWallet}`);
+    delete walletBook[removeWallet];
+    saveWalletBook(walletBook);
+    console.log(`Removed wallet ${removeWallet}`);
+    return;
+  }
+  if (boolArg(args["list-wallets"])) {
+    const entries = Object.entries(walletBook);
+    if (entries.length === 0) {
+      console.log("No saved wallets.");
+      return;
+    }
+    for (const [name, address] of entries) console.log(`${name}: ${address}`);
+    return;
+  }
+  const wallets = parseWalletSpecs(stringArg(args.wallets) || stringArg(args.wallet), walletBook);
   const extraTokens = splitAddresses(stringArg(args.tokens) || stringArg(args.token));
-  const format = stringArg(args.format) || "human";
+  const format = resolveFormat(stringArg(args.format));
+  const totalsOnly = boolArg(args["totals-only"]);
+  const savePath = stringArg(args.save);
   const maxDiscovered = Number.isFinite(Number(args["max-discovered"])) ? Number(args["max-discovered"]) : 20;
 
   if (wallets.length === 0) throw new Error("Missing --wallets address list");
@@ -472,11 +653,12 @@ async function main(): Promise<void> {
   }
 
   const { assetsDir, network, rpcUrl, knownTokens } = resolveConfig(
-    stringArg(args.network) || "atlantic-testnet",
+    stringArg(args.network),
     stringArg(args["rpc-url"]),
     stringArg(args["assets-dir"]),
   );
   const warnings: string[] = [];
+  const snapshotTime = new Date().toISOString();
   const blockHex = await rpc<string>(rpcUrl, "eth_blockNumber", []);
   const blockNumber = Number(BigInt(blockHex));
   const discoveredTokens = boolArg(args.discover) ? await discoverTokens(network, wallets, warnings, maxDiscovered) : [];
@@ -567,6 +749,7 @@ async function main(): Promise<void> {
     assetsDir,
     nativeSymbol: nativeAsset.symbol,
     blockNumber,
+    snapshotTime,
     walletCount: wallets.length,
     tokenCount: tokens.length,
     discovery: {
@@ -595,12 +778,26 @@ async function main(): Promise<void> {
     warnings,
   };
 
-  if (format === "csv") console.log(toCsv(report));
-  else if (format === "json") console.log(JSON.stringify(report, null, 2));
-  else console.log(toHuman(report));
+  const output = renderReport(report, format, totalsOnly);
+  if (savePath) {
+    fs.writeFileSync(savePath, output.endsWith("\n") ? output : `${output}\n`, "utf8");
+    console.log(`Saved ${format} report to ${savePath}`);
+  } else {
+    console.log(output);
+  }
 }
 
 main().catch((error: unknown) => {
-  console.error(JSON.stringify({ error: (error as Error).message }, null, 2));
+  const message = (error as Error).message;
+  console.error(JSON.stringify({
+    error: message,
+    hint: message.includes("Missing --wallets")
+      ? "Pass addresses or saved names with --wallets 0xWallet1,Name2. Save names with --add-wallet Name:0xWallet."
+      : message.includes("Invalid wallet address") || message.includes("Invalid token address")
+        ? "Addresses must be 0x plus 40 hexadecimal characters."
+        : message.includes("Unknown wallet name")
+          ? "Use --list-wallets to see saved names, or add one with --add-wallet Name:0xWallet."
+          : "Run with --help for usage examples.",
+  }, null, 2));
   process.exit(1);
 });

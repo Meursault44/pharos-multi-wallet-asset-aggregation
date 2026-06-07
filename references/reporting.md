@@ -4,7 +4,7 @@
 
 Use a compact report when the user asks for a summary:
 
-- Verdict line: total wallets scanned, network, snapshot block.
+- Verdict line: total wallets scanned, network, snapshot block, and ISO timestamp.
 - Aggregate holdings table: asset, token address or native marker, total balance, wallets with nonzero balance.
 - Per-wallet section: one row per wallet with nonzero balances grouped by asset.
 - Ranking line: highest native balance by default; most active wallet when activity sampling is enabled.
@@ -16,10 +16,16 @@ Use a compact report when the user asks for a summary:
 Use these columns for CSV exports:
 
 ```text
-network,block,wallet_label,wallet,asset_symbol,asset_name,token_address,balance_raw,balance,decimals,is_native,explorer_url
+network,block,snapshot_time,wallet_label,wallet,asset_symbol,asset_name,token_address,balance_raw,balance,decimals,is_native,explorer_url
 ```
 
 Use `native` as the token address for PHRS or PROS.
+
+For `--totals-only --format csv`, use:
+
+```text
+network,block,snapshot_time,asset_symbol,asset_name,token_address,balance_raw,balance,decimals,is_native,wallets_with_balance,wallet_count
+```
 
 ## Edge Cases
 
@@ -36,6 +42,8 @@ Use `native` as the token address for PHRS or PROS.
 - `--max-discovered <n>`: Cap explorer-discovered token contracts; default to 20 to avoid noisy wallets slowing the report.
 - `--activity`: Sample recent explorer transactions to estimate transaction count and gas spent. Treat it as a recent sample, not full lifetime history.
 - `--include-zero`: Include zero ERC20 balances in per-wallet output for exhaustive exports.
+- `--totals-only`: Return only aggregate holdings, omitting per-wallet details from human/JSON/CSV output.
+- `--save <path>`: Write the rendered report to a file and print the saved path.
 
 ## Safety
 
