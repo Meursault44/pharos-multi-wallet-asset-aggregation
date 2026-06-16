@@ -1,196 +1,53 @@
 ---
 name: pharos-multi-wallet-asset-aggregation
-description: Aggregate native PHRS/PROS and ERC20 asset balances across multiple wallets on Pharos Atlantic testnet or Pharos mainnet. Use when a user asks to summarize holdings, compare balances, consolidate portfolio exposure, audit wallet assets, rank wallets, inspect cross-wallet activity, export balances, or build a multi-wallet asset report for Pharos addresses.
+description: Aggregate native PHRS/PROS and ERC20 balances across multiple wallets on Pharos Atlantic testnet or Pharos mainnet. Use for portfolio summaries, wallet comparisons, asset audits, balance exports, wallet rankings, token discovery, and read-only cross-wallet activity reports. Resolve saved wallet aliases with $pharos-wallet-address-book before running this skill.
 ---
 
 # Pharos Multi-Wallet Asset Aggregation
 
-Use this skill to produce a read-only asset inventory across many Pharos wallets. Combine it with `pharos-skill-engine` for network config and token lists.
+Produce read-only, point-in-time asset reports across multiple Pharos wallets. Always use this skill together with `pharos-skill-engine` so network IDs, RPC URLs, explorers, and token addresses come from the canonical Pharos configuration.
 
-## Inputs
+Never request or store private keys, seed phrases, signatures, approvals, or transaction credentials.
 
-Ask for or infer:
+## Capability Index
 
-- Wallet addresses: required, one or more `0x` plus 40 hex character addresses.
-- Network: default to `mainnet`; support `atlantic-testnet`.
-- Token universe: default to the known tokens in `pharos-skill-engine/assets/tokens.json`; allow extra ERC20 addresses when the user provides them.
-- Output mode: default to a concise human report; use JSON or CSV when requested.
-- Wallet labels: optional; accept `Main:0x...` and `Trading:0x...` labels.
-- Saved wallet names: optional; resolve names from `assets/wallet-labels.json` when the user refers to wallets by name.
+| User intent and synonyms | Capability | Instructions |
+|---|---|---|
+| aggregate balances, summarize holdings, portfolio total, суммарные активы, итого | Aggregate wallet assets | [Aggregate Wallet Assets](references/aggregation.md#aggregate-wallet-assets) |
+| compare wallets, rank wallets, где больше, сравни кошельки | Compare and rank wallets | [Compare And Rank Wallets](references/aggregation.md#compare-and-rank-wallets) |
+| export CSV, JSON report, таблица, машинный формат | Export reports | [Export Reports](references/aggregation.md#export-reports) |
+| discover tokens, найти токены, scan transfer history | Discover ERC20 candidates | [Discover ERC20 Candidates](references/aggregation.md#discover-erc20-candidates) |
+| activity, transactions, gas spent, активность | Sample wallet activity | [Sample Wallet Activity](references/aggregation.md#sample-wallet-activity) |
+| output shape, warnings, zero balances, edge cases | Format the final answer | [Reporting Guide](references/reporting.md#multi-wallet-asset-reporting) |
 
-Never ask for private keys or seed phrases. This workflow uses read-only JSON-RPC calls only.
+## Routing Rules
 
-## Saved Wallet Names
-
-Use the local address book when the user wants to save or reuse wallet names. The address book is `assets/wallet-labels.json` and stores public addresses only.
-
-- Add or update a saved name: `npm run aggregate -- --add-wallet Main:0xWallet`
-- List saved names: `npm run aggregate -- --list-wallets`
-- Remove a saved name: `npm run aggregate -- --remove-wallet Main`
-- Use saved names in reports: `npm run aggregate -- --wallets Main,Trading`
-
-Map natural-language requests to these commands:
-
-- "add wallet", "save wallet", "добавь кошелек", "сохрани кошелек" -> `--add-wallet Name:0xAddress`
-- "list wallets", "saved wallets", "покажи кошельки" -> `--list-wallets`
-- "remove wallet", "delete wallet", "удали кошелек" -> `--remove-wallet Name`
-- If a user says `Main`, `Trading`, or another saved name in a wallet list, pass the name through `--wallets Main,Trading`.
-
-## User Intent Mapping
-
-Map natural-language requests to CLI options:
-
-- "compare", "сравни", "где больше", "у кого больше" -> human report with per-wallet balances and native-balance ranking.
-- "summary", "суммарно", "суммарные активы", "итого" -> add `--totals-only` unless the user also asks for per-wallet details.
-- "CSV", "таблица", "экспорт" -> add `--format csv`; use `--save <file>` when the user asks to save a file.
-- "JSON", "для скрипта", "machine-readable" -> add `--format json`.
-- "все строки", "нулевые балансы", "полный отчет" -> add `--include-zero`.
-- "найди токены", "discover", "все токены по истории" -> add `--discover`; cap with `--max-discovered` for noisy wallets.
-- "активность", "транзакции", "gas spent" -> add `--activity`.
-
-If the user does not specify a network, use `mainnet`. Use `atlantic-testnet` only when the user explicitly asks for testnet.
+1. Default to `atlantic-testnet`. Use `mainnet` only when the user explicitly requests mainnet or PROS.
+2. Require at least one valid public EVM address. If the user gives a saved alias, resolve it with `$pharos-wallet-address-book` first and pass the direct address here.
+3. Use configured tokens by default. Add `--tokens` only for token contracts supplied by the user.
+4. Use `--totals-only` for aggregate-only requests, `--format json` for machine-readable output, and `--format csv --save <path>` for file exports.
+5. Use `--discover` only when the user asks for broader token discovery. Explorer discovery is best-effort and RPC `balanceOf` remains the source of balance truth.
+6. Use `--activity` only when requested. Describe it as a recent explorer sample, not complete lifetime history.
+7. Report partial RPC or metadata failures as warnings. Never silently claim a complete scan after partial failures.
+8. State the network, chain ID, snapshot block, and timestamp in the result.
+9. Use `$pharos-wallet-address-book` for all alias list/resolve/add/rename/remove operations. This skill must never load, add, rename, or remove aliases itself.
 
 ## Fast Path
 
-Run the bundled aggregator first from the skill repository root:
+From this skill repository:
 
 ```bash
 npm run aggregate -- --wallets 0xWallet1,0xWallet2
 ```
 
-With wallet labels:
+Mainnet must be explicit:
 
 ```bash
-npm run aggregate -- --wallets Main:0xWallet1,Trading:0xWallet2
+npm run aggregate -- --wallets 0xWallet1,0xWallet2 --network mainnet
 ```
 
-Save wallet names for later:
+For the complete command contract, parameters, output parsing, exact errors, and agent guidelines, read [references/aggregation.md](references/aggregation.md).
 
-```bash
-npm run aggregate -- --add-wallet Main:0xWallet1
-npm run aggregate -- --add-wallet Trading:0xWallet2
-```
+## Privacy
 
-Use saved wallet names:
-
-```bash
-npm run aggregate -- --wallets Main,Trading
-```
-
-List or remove saved wallet names:
-
-```bash
-npm run aggregate -- --list-wallets
-npm run aggregate -- --remove-wallet Trading
-```
-
-On Atlantic testnet:
-
-```bash
-npm run aggregate -- --wallets 0xWallet1,0xWallet2 --network atlantic-testnet
-```
-
-With extra ERC20 tokens:
-
-```bash
-npm run aggregate -- --wallets 0xWallet1,0xWallet2 --tokens 0xToken1,0xToken2 --network mainnet
-```
-
-With explorer-assisted token discovery and activity sampling:
-
-```bash
-npm run aggregate -- --wallets 0xWallet1,0xWallet2 --discover --activity
-```
-
-Limit explorer-discovered tokens when a wallet has noisy transfer history:
-
-```bash
-npm run aggregate -- --wallets 0xWallet1,0xWallet2 --discover --max-discovered 10
-```
-
-JSON output:
-
-```bash
-npm run aggregate -- --wallets 0xWallet1,0xWallet2 --format json
-```
-
-CSV output:
-
-```bash
-npm run aggregate -- --wallets 0xWallet1,0xWallet2 --format csv
-```
-
-Totals-only summary:
-
-```bash
-npm run aggregate -- --wallets 0xWallet1,0xWallet2 --totals-only
-```
-
-Save a CSV report:
-
-```bash
-npm run aggregate -- --wallets 0xWallet1,0xWallet2 --format csv --save report.csv
-```
-
-Show CLI help:
-
-```bash
-npm run aggregate -- --help
-```
-
-## Workflow
-
-1. Validate wallet and token addresses before making RPC calls.
-2. Resolve saved wallet names from `assets/wallet-labels.json` when names are used.
-3. Resolve the selected network from `pharos-skill-engine/assets/networks.json`.
-4. Load known tokens from `pharos-skill-engine/assets/tokens.json`.
-5. Query each wallet's native balance with `eth_getBalance`.
-6. Query each ERC20 with `balanceOf(wallet)`; use known decimals when available and read metadata for extra tokens.
-7. Aggregate totals by asset and per wallet.
-8. Add wallet explorer links when the network config provides an explorer URL.
-9. Optionally discover extra token contracts from recent explorer token-transfer data with `--discover`; cap noisy discovery with `--max-discovered`.
-10. Optionally sample recent activity and gas-fee data with `--activity`.
-11. Highlight failures separately instead of silently dropping assets.
-12. Report the snapshot block number and network so the user knows when the balances were observed.
-
-Use `--assets-dir <path>` to point at a different Pharos `networks.json` and `tokens.json` directory. The script first checks local `assets/`, then sibling `pharos-skill-engine/assets`, then `.agents/skills/pharos-skill-engine/assets`.
-
-Saved wallet names live in `assets/wallet-labels.json`. Store public wallet addresses only. Never store private keys, seed phrases, RPC secrets, or API keys there.
-
-## Reporting
-
-Return:
-
-- Network, chain ID, snapshot block, and wallet count.
-- Snapshot time in ISO-8601 UTC format.
-- Aggregate totals by asset.
-- Per-wallet balances for nonzero assets by default.
-- Wallet ranking by native balance; activity ranking when `--activity` is enabled.
-- Explorer links for each wallet when available.
-- Zero-balance rows only when the user asks for exhaustive output.
-- RPC or metadata errors as warnings.
-- A short note that balances are a point-in-time read and do not include off-chain prices unless the user provided price data.
-
-For report shaping, CSV conventions, and edge cases, read `references/reporting.md`.
-
-## Good User Prompts
-
-- `[$pharos-multi-wallet-asset-aggregation](SKILL.md) сравни кошельки 0x... и 0x...`
-- `[$pharos-multi-wallet-asset-aggregation](SKILL.md) посмотри суммарные активы main:0x... и trading:0x...`
-- `[$pharos-multi-wallet-asset-aggregation](SKILL.md) сделай CSV по этим адресам 0x..., 0x..., 0x...`
-- `[$pharos-multi-wallet-asset-aggregation](SKILL.md) дай JSON totals-only по кошелькам 0x... и 0x...`
-- `[$pharos-multi-wallet-asset-aggregation](SKILL.md) проверь эти адреса с discover и activity`
-- `[$pharos-multi-wallet-asset-aggregation](SKILL.md) на atlantic-testnet покажи полный отчет с нулевыми балансами`
-
-## Saved Name Prompt Examples
-
-- `[$pharos-multi-wallet-asset-aggregation](SKILL.md) add wallet Main:0x...`
-- `[$pharos-multi-wallet-asset-aggregation](SKILL.md) save wallet Trading:0x...`
-- `[$pharos-multi-wallet-asset-aggregation](SKILL.md) compare Main and Trading`
-- `[$pharos-multi-wallet-asset-aggregation](SKILL.md) show totals for Main, Trading, Vault`
-- `[$pharos-multi-wallet-asset-aggregation](SKILL.md) list saved wallets`
-- `[$pharos-multi-wallet-asset-aggregation](SKILL.md) remove wallet Trading`
-
-## Privacy Note
-
-Public wallet addresses can reveal balances and activity patterns, especially when multiple addresses are reported together. Keep the workflow read-only, never request secrets, and remind the user that linking addresses in a single report may reduce privacy.
+Public addresses can reveal ownership relationships when combined in one report. Mention this when the user aggregates addresses that may not be intended to be publicly linked.

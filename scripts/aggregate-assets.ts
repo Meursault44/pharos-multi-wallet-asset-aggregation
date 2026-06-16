@@ -14,17 +14,12 @@ const SELECTORS = {
   balanceOf: "70a08231",
 } as const;
 
-const WALLET_BOOK_FILE = path.join(__dirname, "..", "assets", "wallet-labels.json");
-const WALLET_NAME_PATTERN = /^[A-Za-z0-9_.-]{1,40}$/;
-
 type CliArgs = Record<string, string | boolean>;
 
 type WalletSpec = {
   label: string | null;
   address: string;
 };
-
-type WalletBook = Record<string, string>;
 
 type NetworkConfig = {
   name: string;
@@ -137,11 +132,8 @@ Usage:
   npm run aggregate -- --wallets 0xWallet1,0xWallet2 [options]
 
 Options:
-  --wallets <list>          Comma/space separated wallets; labels accepted as Name:0x...
-  --add-wallet <name:addr>  Save a wallet name in assets/wallet-labels.json
-  --list-wallets           List saved wallet names
-  --remove-wallet <name>    Remove a saved wallet name
-  --network <name>          mainnet (default) or atlantic-testnet
+  --wallets <list>          Comma/space separated public wallet addresses
+  --network <name>          atlantic-testnet (default) or mainnet
   --tokens <list>           Extra ERC20 token addresses to scan
   --format <human|json|csv> Output format, default human
   --totals-only             Show/export only aggregate asset totals
@@ -154,9 +146,6 @@ Options:
   --rpc-url <url>           Override RPC URL
 
 Examples:
-  npm run aggregate -- --add-wallet Main:0x...
-  npm run aggregate -- --wallets Main,Trading
-  npm run aggregate -- --wallets Main:0x...,Trading:0x...
   npm run aggregate -- --wallets 0x...,0x... --totals-only
   npm run aggregate -- --wallets 0x...,0x... --format csv --save report.csv`);
 }
@@ -167,56 +156,28 @@ function resolveFormat(value: string | undefined): OutputMode {
   throw new Error(`Unsupported format: ${format}. Use human, json, or csv.`);
 }
 
-function isAddress(value: unknown): value is string {
+function isAddress(value: string): boolean;
+function isAddress(value: unknown): value is string;
+function isAddress(value: unknown): boolean {
   return typeof value === "string" && /^0x[a-fA-F0-9]{40}$/.test(value);
-}
-
-function isWalletName(value: unknown): value is string {
-  return typeof value === "string" && WALLET_NAME_PATTERN.test(value) && !value.startsWith("0x");
 }
 
 function shortAddress(address: string): string {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
-function loadWalletBook(): WalletBook {
-  if (!fs.existsSync(WALLET_BOOK_FILE)) return {};
-  const parsed = loadJson<unknown>(WALLET_BOOK_FILE);
-  if (!isRecord(parsed)) throw new Error(`Invalid wallet address book: ${WALLET_BOOK_FILE}`);
-  const book: WalletBook = {};
-  for (const [name, address] of Object.entries(parsed)) {
-    if (!isWalletName(name)) throw new Error(`Invalid saved wallet name: ${name}`);
-    if (!isAddress(address)) throw new Error(`Invalid saved wallet address for ${name}: ${String(address)}`);
-    book[name] = address;
-  }
-  return book;
-}
-
-function saveWalletBook(book: WalletBook): void {
-  fs.mkdirSync(path.dirname(WALLET_BOOK_FILE), { recursive: true });
-  const sorted = Object.fromEntries(Object.entries(book).sort(([left], [right]) => left.localeCompare(right)));
-  fs.writeFileSync(WALLET_BOOK_FILE, `${JSON.stringify(sorted, null, 2)}\n`, "utf8");
-}
-
-function parseNamedAddress(value: string): WalletSpec {
-  const match = value.match(/^\s*([A-Za-z0-9_.-]{1,40})\s*:\s*(0x[a-fA-F0-9]{40})\s*$/);
-  if (!match) throw new Error(`Invalid wallet mapping: ${value}. Expected name:0xAddress.`);
-  if (!isWalletName(match[1])) throw new Error(`Invalid wallet name: ${match[1]}. Use 1-40 letters, numbers, dots, underscores, or dashes; names cannot start with 0x.`);
-  return { label: match[1], address: match[2] };
-}
-
-function parseWalletSpecs(value: string | undefined, walletBook: WalletBook): WalletSpec[] {
+function parseWalletSpecs(value: string | undefined): WalletSpec[] {
   if (!value) return [];
   return value
     .split(/[,\s;\n]+/)
     .map((item) => item.trim())
     .filter(Boolean)
     .map((item) => {
-      if (/^[A-Za-z0-9_.-]{1,40}\s*:\s*0x[a-fA-F0-9]{40}$/.test(item)) return parseNamedAddress(item);
       if (isAddress(item)) return { label: null, address: item };
-      if (isWalletName(item) && walletBook[item]) return { label: item, address: walletBook[item] };
-      if (isWalletName(item)) throw new Error(`Unknown wallet name: ${item}. Add it with --add-wallet ${item}:0xAddress.`);
-      return { label: null, address: item };
+      if (item.includes(":")) {
+        throw new Error(`Wallet labels are not supported here: ${item}. Use $pharos-wallet-address-book to manage aliases, then pass direct addresses.`);
+      }
+      throw new Error(`Invalid wallet address: ${item}. Resolve aliases with $pharos-wallet-address-book before running this aggregator.`);
     });
 }
 
@@ -256,7 +217,7 @@ function resolveAssetsDir(explicitDir: string | undefined): ResolvedAssets {
 
 function resolveConfig(networkName: string | undefined, rpcOverride: string | undefined, assetsOverride: string | undefined) {
   const { assetsDir, networks, tokens } = resolveAssetsDir(assetsOverride);
-  const selected = networkName || networks.defaultNetwork || "mainnet";
+  const selected = networkName || networks.defaultNetwork || "atlantic-testnet";
   const network = networks.networks.find((item) => item.name === selected);
   if (!network && !rpcOverride) throw new Error(`Unsupported network: ${selected}`);
   const resolvedNetwork: NetworkConfig = network || { name: selected, rpcUrl: rpcOverride!, chainId: null, nativeToken: "UNKNOWN" };
@@ -610,34 +571,11 @@ async function main(): Promise<void> {
     printHelp();
     return;
   }
-  const walletBook = loadWalletBook();
-  const addWallet = stringArg(args["add-wallet"]);
-  const removeWallet = stringArg(args["remove-wallet"]);
-  if (addWallet) {
-    const wallet = parseNamedAddress(addWallet);
-    walletBook[wallet.label!] = wallet.address;
-    saveWalletBook(walletBook);
-    console.log(`Saved wallet ${wallet.label}: ${wallet.address}`);
-    return;
+  if (args["wallet-book"]) {
+    throw new Error("Wallet address book loading is not supported by this aggregator. Use $pharos-wallet-address-book to resolve aliases, then pass direct addresses with --wallets.");
   }
-  if (removeWallet) {
-    if (!isWalletName(removeWallet)) throw new Error(`Invalid wallet name: ${removeWallet}`);
-    if (!walletBook[removeWallet]) throw new Error(`Unknown wallet name: ${removeWallet}`);
-    delete walletBook[removeWallet];
-    saveWalletBook(walletBook);
-    console.log(`Removed wallet ${removeWallet}`);
-    return;
-  }
-  if (boolArg(args["list-wallets"])) {
-    const entries = Object.entries(walletBook);
-    if (entries.length === 0) {
-      console.log("No saved wallets.");
-      return;
-    }
-    for (const [name, address] of entries) console.log(`${name}: ${address}`);
-    return;
-  }
-  const wallets = parseWalletSpecs(stringArg(args.wallets) || stringArg(args.wallet), walletBook);
+
+  const wallets = parseWalletSpecs(stringArg(args.wallets) || stringArg(args.wallet));
   const extraTokens = splitAddresses(stringArg(args.tokens) || stringArg(args.token));
   const format = resolveFormat(stringArg(args.format));
   const totalsOnly = boolArg(args["totals-only"]);
@@ -789,15 +727,33 @@ async function main(): Promise<void> {
 
 main().catch((error: unknown) => {
   const message = (error as Error).message;
+  const code = message.includes("Missing --wallets")
+    ? "MISSING_WALLETS"
+    : message.includes("Wallet address book loading") || message.includes("Wallet labels are not supported")
+      ? "WALLET_ALIAS_UNSUPPORTED"
+    : message.includes("Invalid wallet address")
+      ? "INVALID_WALLET_ADDRESS"
+      : message.includes("Invalid token address")
+        ? "INVALID_TOKEN_ADDRESS"
+        : message.includes("Unsupported network")
+          ? "UNSUPPORTED_NETWORK"
+          : message.includes("Unsupported format")
+            ? "UNSUPPORTED_FORMAT"
+            : message.includes("Unable to find Pharos assets")
+              ? "ASSETS_NOT_FOUND"
+              : /RPC HTTP|^-?\d+:|fetch failed|ECONN|ENOTFOUND|timeout/i.test(message)
+                ? "RPC_ERROR"
+                : "INTERNAL_ERROR";
   console.error(JSON.stringify({
+    code,
     error: message,
     hint: message.includes("Missing --wallets")
-      ? "Pass addresses or saved names with --wallets 0xWallet1,Name2. Save names with --add-wallet Name:0xWallet."
+      ? "Pass direct public addresses with --wallets 0xWallet1,0xWallet2."
+      : code === "WALLET_ALIAS_UNSUPPORTED" || message.includes("Resolve aliases")
+        ? "Use $pharos-wallet-address-book to list or resolve aliases, then run this aggregator with direct addresses."
       : message.includes("Invalid wallet address") || message.includes("Invalid token address")
         ? "Addresses must be 0x plus 40 hexadecimal characters."
-        : message.includes("Unknown wallet name")
-          ? "Use --list-wallets to see saved names, or add one with --add-wallet Name:0xWallet."
-          : "Run with --help for usage examples.",
+        : "Run with --help for usage examples.",
   }, null, 2));
   process.exit(1);
 });

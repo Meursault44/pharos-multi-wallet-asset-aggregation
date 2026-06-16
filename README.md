@@ -2,12 +2,14 @@
 
 Read-only TypeScript skill for aggregating native PHRS/PROS and ERC20 balances across multiple Pharos wallets.
 
+The skill follows the Pharos Skill Engine structure: `SKILL.md` routes intents through a Capability Index, while `references/aggregation.md` defines exact commands, parameters, output parsing, errors, and agent guidelines. It should be used together with the base `pharos-skill-engine` so network, RPC, explorer, and token assumptions stay consistent.
+
 ## Features
 
 - Aggregate native and ERC20 balances across many wallets.
 - Support Pharos Atlantic testnet and Pharos mainnet.
-- Accept wallet labels such as `Main:0x...`.
-- Save wallet addresses under names with `--add-wallet Name:0x...`, list them with `--list-wallets`, reuse them with `--wallets Name`, and remove them with `--remove-wallet Name`.
+- Accept direct public wallet addresses only.
+- Delegate reusable public wallet aliases to the separate `$pharos-wallet-address-book` skill. This aggregator does not load, store, add, rename, or remove aliases.
 - Export human-readable, JSON, or CSV reports.
 - Print totals-only summaries for quick portfolio checks.
 - Save reports directly with `--save`.
@@ -29,31 +31,20 @@ npm install
 npm run aggregate -- --wallets 0xWallet1,0xWallet2
 ```
 
-With labels:
+The default network is Pharos Atlantic testnet. Select mainnet explicitly:
 
 ```bash
-npm run aggregate -- --wallets Main:0xWallet1,Trading:0xWallet2
+npm run aggregate -- --wallets 0xWallet1,0xWallet2 --network mainnet
 ```
 
-Save wallet names for later:
+Saved aliases must be resolved before running the aggregator:
 
-```bash
-npm run aggregate -- --add-wallet Main:0xWallet1
-npm run aggregate -- --add-wallet Trading:0xWallet2
+```text
+$pharos-wallet-address-book resolves main -> 0x...
+npm run aggregate -- --wallets 0xResolvedAddress
 ```
 
-Use saved wallet names:
-
-```bash
-npm run aggregate -- --wallets Main,Trading
-```
-
-List or remove saved wallet names:
-
-```bash
-npm run aggregate -- --list-wallets
-npm run aggregate -- --remove-wallet Trading
-```
+Passing `main`, `Main:0x...`, or `--wallet-book` directly to this skill is intentionally rejected with a hint to use `$pharos-wallet-address-book`.
 
 On Atlantic testnet:
 
@@ -105,12 +96,21 @@ The script uses `assets/networks.json` and `assets/tokens.json` by default. You 
 npm run aggregate -- --wallets 0xWallet1 --assets-dir ../pharos-skill-engine/assets
 ```
 
-Saved wallet names are stored in `assets/wallet-labels.json`. This file stores public addresses only; do not put private keys, seed phrases, or API secrets in it.
+Saved wallet aliases are intentionally not loaded or managed by this skill. Use `$pharos-wallet-address-book` to list or resolve aliases, then pass direct addresses to this aggregator.
+
+## Network Behavior
+
+- Default network is Pharos Atlantic testnet.
+- Mainnet is used only when explicitly requested.
+- Reads are point-in-time snapshots at one block.
+- Configured token balances are read through RPC `balanceOf`.
+- Explorer discovery and activity sampling are optional best-effort enrichments, not complete lifetime history.
 
 ## Development
 
 ```bash
 npm run check
+npm test
 ```
 
 ## Safety
